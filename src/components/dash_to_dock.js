@@ -1,5 +1,4 @@
 import Meta from 'gi://Meta';
-import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 
@@ -34,7 +33,7 @@ class DashInfos {
         this.bg_manager = bg_manager;
         this.paint_signals = paint_signals;
         this.settings = dash_blur.settings;
-        this.old_style = this.dash._background.style;
+        this.old_style = this.dash._background?.style;
 
         this.updateId = 0;
 
@@ -44,8 +43,8 @@ class DashInfos {
             this.dash_blur.connect('remove-dashes', () => this.remove_dash_blur()),
             this.dash_blur.connect('override-style', () => this.override_style()),
             this.dash_blur.connect('remove-style', () => this.remove_style()),
-            this.dash_blur.connect('show', () => this.background_group.show()),
-            this.dash_blur.connect('hide', () => this.background_group.hide()),
+            this.dash_blur.connect('show', () => this.background_group?.show()),
+            this.dash_blur.connect('hide', () => this.background_group?.hide()),
             this.dash_blur.connect('update-size', () => this.schedule_update()),
             this.dash_blur.connect('change-blur-type', () => this.change_blur_type()),
             this.dash_blur.connect('update-pipeline', () => this.update_pipeline())
@@ -53,21 +52,35 @@ class DashInfos {
     }
 
     schedule_update() {
-        if (this.updateId) {
-            GLib.source_remove(this.updateId);
-            this.updateId = 0;
-        }
+        const laters = global.compositor?.get_laters?.();
 
-        this.updateId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-            this.updateId = 0;
-            this.update_size();
-            return GLib.SOURCE_REMOVE;
-        });
+        this.clear_pending_idles();
+
+        if (laters) {
+            // Modern GNOME Shell (GNOME 44+)
+            this.updateId = laters.add(Meta.LaterType.IDLE, () => {
+                this.updateId = 0;
+                this.update_size();
+                return false;
+            });
+        } else {
+            // Legacy fallback (GNOME 43 and older)
+            this.updateId = Meta.later_add(Meta.LaterType.IDLE, () => {
+                this.updateId = 0;
+                this.update_size();
+                return false
+            });
+        }
     }
 
     clear_pending_idles() {
         if (this.updateId) {
-            GLib.source_remove(this.updateId);
+            const laters = global.compositor?.get_laters?.();
+            if (laters) {
+                laters.remove(this.updateId);
+            } else {
+                Meta.later_remove(this.updateId);
+            }
             this.updateId = 0;
         }
     }
@@ -100,7 +113,8 @@ class DashInfos {
     }
 
     remove_style() {
-        this.dash._background.style = this.old_style;
+        if (this.dash?._background)
+            this.dash._background.style = this.old_style;
 
         DASH_STYLES.forEach(
             style => {
@@ -130,9 +144,13 @@ class DashInfos {
     change_blur_type() {
         this.destroy_dash();
 
+        let blur_result = this.dash_blur.add_blur(this.dash);
+        if (!blur_result)
+            return;
+
         let [
             background, background_group, bg_manager, paint_signals
-        ] = this.dash_blur.add_blur(this.dash);
+        ] = blur_result;
 
         this.background = background;
         this.background_group = background_group;
@@ -141,7 +159,7 @@ class DashInfos {
 
         this.dash.get_parent().insert_child_at_index(this.background_group, 0);
 
-        this.update_size();
+        this.schedule_update();
     }
 
     update_pipeline() {

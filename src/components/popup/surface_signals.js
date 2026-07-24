@@ -1,5 +1,5 @@
+import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import GLib from 'gi://GLib';
 
 const SURFACE_SIGNALS = [
     'notify::allocation',
@@ -27,7 +27,6 @@ export const PopupBlurSurfaceSignals = class PopupBlurSurfaceSignals {
         this.signal_ids = [];
         this.signal_actors = new WeakSet();
         this.destroyed_actors = new WeakSet();
-        this.pendingIdles = new Set();
     }
 
     connect_actor(actor) {
@@ -45,17 +44,25 @@ export const PopupBlurSurfaceSignals = class PopupBlurSurfaceSignals {
                     if (is_excluded_from_deferring_surface) {
                         this.surface.queue_update();
                     } else {
-                        if (this.pendingIdles.size > 0)
-                            return;
-
-                        let updateId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-                            this.pendingIdles.delete(updateId);
-                            this.surface.queue_update();
-                            return GLib.SOURCE_REMOVE;
-                        });
-
-                        if (updateId)
-                            this.pendingIdles.add(updateId);
+                        const laters = global.compositor?.get_laters?.();
+                        
+                        this.clear_pending_idles();
+                        
+                        if (laters) {
+                            // Modern GNOME Shell (GNOME 44+)
+                            this.updateId = laters.add(Meta.LaterType.IDLE, () => {
+                                this.updateId = 0;
+                                this.surface.queue_update();
+                                return false;
+                            });
+                        } else {
+                            // Legacy fallback (GNOME 43 and older)
+                            this.updateId = Meta.later_add(Meta.LaterType.IDLE, () => {
+                                this.updateId = 0;
+                                this.surface.queue_update();
+                                return false
+                            });
+                        }
                     }
                 });
                 this.signal_ids.push([actor, id, signal]);
@@ -113,15 +120,20 @@ export const PopupBlurSurfaceSignals = class PopupBlurSurfaceSignals {
         });
     }
 
-    disconnect_all() {
-        if (this.pendingIdles.size > 0) {
-            for (const updateId of this.pendingIdles) {
-                if (updateId) {
-                    GLib.source_remove(updateId);
-                }
+    clear_pending_idles() {
+        if (this.updateId) {
+            const laters = global.compositor?.get_laters?.();
+            if (laters) {
+                laters.remove(this.updateId);
+            } else {
+                Meta.later_remove(this.updateId);
             }
-            this.pendingIdles.clear();
-        };
+            this.updateId = 0;
+        }
+    }
+
+    disconnect_all() {
+        this.clear_pending_idles();
         this.signal_ids.forEach(([signal_actor, signal_id]) => {
             if (this.destroyed_actors.has(signal_actor))
                 return;
